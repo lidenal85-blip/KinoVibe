@@ -1,0 +1,7 @@
+   Woah! You appear to be trying to run flutter as root.
+   We strongly recommend running the flutter tool without superuser privileges.
+  /
+📎
+
+Compiling lib/main.dart for the Web...                            386.7s
+✓ Built build/web
