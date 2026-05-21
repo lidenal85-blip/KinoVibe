@@ -1,0 +1,12 @@
+__pycache__/
+venv/
+*.pyc
+logs/
+data/
+frontend/build/
+frontend/canvaskit/
+frontend/assets/
+frontend/main.dart.js
+frontend/.last_build_id
+backend/vault.json
+backend/*.bak
