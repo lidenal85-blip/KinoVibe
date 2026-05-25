@@ -18,10 +18,12 @@ from .hdrezka import HDRezkaProvider
 from .rutube import RutubeProvider
 from .filmix import FilmixProvider
 from .torrent import TorrentProvider
+from .nova_torrent import NovaTorrentProvider
+from .rutracker_provider import RuTrackerProvider
+from .yts_provider import YTSProvider
 
 logger = logging.getLogger("kinovibe.providers")
 
-# Ordered list of all providers — YouTube first as primary source
 REGISTRY: list[BaseProvider] = [
     YouTubeProvider(),
     VKProvider(),
@@ -29,7 +31,9 @@ REGISTRY: list[BaseProvider] = [
     HDRezkaProvider(),
     RutubeProvider(),
     FilmixProvider(),
-    TorrentProvider(),
+    NovaTorrentProvider(),   # rutor.info + kinozal.tv + rutracker (Russian, RU dubbing)
+    RuTrackerProvider(),     # rutracker.org (direct auth, best RU coverage)
+    YTSProvider(),           # YTS (English Hollywood, 1080p/4K, free API)
 ]
 
 _by_name: dict[str, BaseProvider] = {p.name: p for p in REGISTRY}
