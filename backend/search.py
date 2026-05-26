@@ -24,6 +24,11 @@ except ImportError:
     pass
 from core.key_pool import get_pool, AllProvidersExhausted
 from providers import aggregate_search
+from providers.tmdb_client import (
+    search_movie as tmdb_search_movie,
+    search_and_enrich as tmdb_enrich,
+    search_tv as tmdb_search_tv,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("KINOVIBE_SEARCH")
@@ -31,21 +36,41 @@ logger = logging.getLogger("KINOVIBE_SEARCH")
 MODEL_NAME = "gemini-2.5-flash"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-SYSTEM_PROMPT = """You are a cinema expert AI specializing in Russian-language content.
-Task: Convert user mood/description into a precise movie/series search query.
+SYSTEM_PROMPT = """You are a cinema search expert for Russian-speaking audience.
+TASK: Convert user input into optimal YouTube search query.
+RULES:
+- ALWAYS prioritize Russian dubbed content (add 'русская озвучка' or 'озвучка')
+- For mood/feeling queries: analyze emotion → pick genre → form search query
+- For title queries: search directly without mood modifiers
+- Keep queries 3-6 words maximum
+- Popularity filter guidance (apply only when provided):
+  - "rare" = arthouse, obscure, festival films, TMDB rating < 6.5, few votes
+  - "mid" = quality films, balanced popularity, TMDB rating 6.5–7.5
+  - "mainstream" = blockbusters, popular, widely-known, TMDB rating > 7.5
+- Return ONLY valid JSON: {"query": "...", "mood": "...", "genre": "...", "language": "ru"}
+EXAMPLES:
+- 'грустный вечер' → {"query": "драма о любви озвучка full movie", "mood": "sad", "genre": "drama", "language": "ru"}
+- 'Аватар' → {"query": "Аватар фильм озвучка", "mood": "", "genre": "sci-fi", "language": "ru"}
+- 'что-то смешное' → {"query": "комедия лучшая озвучка full movie", "mood": "happy", "genre": "comedy", "language": "ru"}"""
 
-Rules:
-1. Result must be ONLY valid JSON — no markdown, no explanation.
-2. Always prioritize Russian-language content, Russian dubbing, or Russian subtitles.
-3. Analyze user mood/feeling → determine fitting genre/style/atmosphere → form a precise search query.
-4. Query must be 3-7 keywords in English (for global search compatibility).
-5. Always append the specific category suffix to the query.
-6. Popularity filter guidance (apply only when provided):
-   - "rare" = arthouse, obscure, festival films, TMDB rating < 6.5, few votes
-   - "mid" = quality films, balanced popularity, TMDB rating 6.5–7.5
-   - "mainstream" = blockbusters, popular, widely-known, TMDB rating > 7.5
+RECOMMEND_TRIGGERS = [
+    "посоветуй", "порекомендуй", "не знаю что", "хочу что-то", "подбери",
+    "найди что-нибудь", "хочу посмотреть", "настроение на", "что посмотреть",
+    "посмотреть вместе", "хочется", "suggest", "recommend",
+]
 
-Output format (strictly): {"query": "string", "genre": "string", "mood": "string", "language": "ru"}"""
+RECOMMEND_PROMPT = (
+    "Ты — опытный кинокуратор с доступом к интернету и актуальным знанием кино.\n"
+    "Запрос пользователя: «{query}»\n\n"
+    "Найди через поиск и порекомендуй 6-8 фильмов. Требования к подборке:\n"
+    "1. НЕ банальный топ-10 — избегай самых очевидных мейнстримных ответов.\n"
+    "2. Смешай: 2-3 известных фильма + 2-3 недооценённых или культовых + 1-2 неочевидных открытия.\n"
+    "3. Причина (reason) — конкретная, 1-2 предложения: ЧТО именно в этом фильме соответствует запросу.\n"
+    "4. Включи фильмы с русской озвучкой, советское/российское кино, если подходит.\n"
+    "5. Год должен быть точным.\n\n"
+    "Верни ТОЛЬКО валидный JSON без markdown, без текста вне JSON:\n"
+    '{{"films": [{{"title": "Название на языке оригинала", "year": 2019, "reason": "Конкретная причина почему именно этот фильм"}}]}}'
+)
 
 CATEGORY_SUFFIX = {
     "movies": "full movie",
@@ -304,6 +329,60 @@ async def enrich_with_tmdb(results: list[dict]) -> list[dict]:
     return results
 
 
+# ─── Kinopoisk enrichment ─────────────────────────────────────────────────────
+
+async def enrich_with_kinopoisk(results: list[dict]) -> list[dict]:
+    """Fill missing poster/description/year/rating from Kinopoisk API (kinopoisk.dev)."""
+    api_key = os.environ.get("KINOPOISK_API_KEY", "")
+    if not api_key:
+        return results
+
+    needs = [r for r in results if not r.get("thumbnail") or not r.get("description")]
+    if not needs:
+        return results
+
+    async def _fetch_one(result: dict) -> None:
+        title = result.get("title", "").strip()
+        if not title:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+                r = await client.get(
+                    "https://api.kinopoisk.dev/v1.4/movie/search",
+                    params={"query": title, "limit": 1},
+                    headers={"X-API-KEY": api_key},
+                )
+            if r.status_code != 200:
+                return
+            docs = r.json().get("docs", [])
+            if not docs:
+                return
+            doc = docs[0]
+
+            if not result.get("thumbnail"):
+                poster = (doc.get("poster") or {}).get("url")
+                if poster:
+                    result["thumbnail"] = poster
+
+            if not result.get("description"):
+                desc = doc.get("description") or doc.get("shortDescription")
+                if desc:
+                    result["description"] = desc
+
+            # Always enrich with Kinopoisk metadata if available
+            if not result.get("year") and doc.get("year"):
+                result["year"] = doc["year"]
+            kp_rating = (doc.get("rating") or {}).get("kp")
+            if kp_rating and not result.get("rating"):
+                result["rating"] = round(float(kp_rating), 1)
+
+        except Exception as e:
+            logger.debug(f"Kinopoisk lookup failed for '{title}': {e}")
+
+    await asyncio.gather(*[_fetch_one(r) for r in needs], return_exceptions=True)
+    return results
+
+
 # ─── Groq description enrichment ──────────────────────────────────────────────
 
 async def enrich_with_groq(results: list[dict]) -> list[dict]:
@@ -356,6 +435,214 @@ async def enrich_with_groq(results: list[dict]) -> list[dict]:
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
+def _has_recommend_trigger(text: str) -> bool:
+    """Return True if the query contains a recommendation trigger word."""
+    text_lower = text.lower()
+    return any(t in text_lower for t in RECOMMEND_TRIGGERS)
+
+
+async def get_recommendations(user_text: str, category: str = "movies") -> dict:
+    """Call Gemini to get film recommendations, then parallel-search each title."""
+    pool = get_pool()
+    try:
+        entry, provider = pool.get_best(prefer="gemini")
+    except AllProvidersExhausted as e:
+        logger.error(f"get_recommendations: {e}")
+        return {"error": "AI service unavailable", "recommendations": [], "count": 0}
+
+    prompt = RECOMMEND_PROMPT.format(query=user_text)
+    url = GEMINI_URL.format(model=MODEL_NAME)
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.9},
+        # Google Search grounding — Gemini searches the internet before answering
+        "tools": [{"google_search": {}}],
+    }
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(url, json=body, params={"key": entry.value})
+
+        latency = time.monotonic() - t0
+
+        if r.status_code != 200:
+            # google_search tool may not be available on this key/tier — retry without grounding
+            if r.status_code in (400, 403):
+                logger.warning(f"[RECOMMEND] Search grounding failed ({r.status_code}), retrying without grounding")
+                body_no_grounding = {k: v for k, v in body.items() if k != "tools"}
+                body_no_grounding["generationConfig"]["temperature"] = 0.9
+                async with httpx.AsyncClient(timeout=20) as c2:
+                    r = await c2.post(url, json=body_no_grounding, params={"key": entry.value})
+                if r.status_code != 200:
+                    raise Exception(f"{r.status_code}: {r.text[:120]}")
+            else:
+                raise Exception(f"{r.status_code}: {r.text[:120]}")
+
+        raw_text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        data = _parse_gemini_json(raw_text)
+        films = data.get("films", [])
+
+        # Fallback: extract individual film objects with regex if full parse failed
+        if not films:
+            film_pattern = re.compile(
+                r'\{[^{}]*"title"\s*:\s*"([^"]+)"[^{}]*"year"\s*:\s*(\d{4})[^{}]*"reason"\s*:\s*"([^"]+)"[^{}]*\}',
+                re.DOTALL,
+            )
+            for m in film_pattern.finditer(raw_text):
+                films.append({"title": m.group(1), "year": int(m.group(2)), "reason": m.group(3)})
+            if films:
+                logger.info(f"[RECOMMEND] Regex fallback extracted {len(films)} films")
+
+        pool.report(entry, code=200, tokens=len(raw_text) // 4, latency=latency)
+        logger.info(f"[RECOMMEND] Gemini returned {len(films)} films for: {user_text!r}")
+
+        # Return fast list — streams loaded lazily per-film by /film/streams
+        # Enrich each film with TMDB metadata (poster, rating, description)
+        async def _enrich_film(f: dict) -> dict:
+            title = f.get("title", "")
+            year  = f.get("year")
+            tmdb  = await tmdb_enrich(title, year)
+            base = {
+                "title":  title,
+                "year":   year or (tmdb.get("year") if tmdb else None),
+                "reason": f.get("reason", ""),
+            }
+            if tmdb:
+                base.update({
+                    "poster":      tmdb.get("poster"),
+                    "rating":      tmdb.get("rating"),
+                    "description": tmdb.get("description") or f.get("reason", ""),
+                    "genres":      tmdb.get("genres", []),
+                    "tmdb_id":     tmdb.get("tmdb_id"),
+                    "title_ru":    tmdb.get("title"),
+                    "title_orig":  tmdb.get("title_orig"),
+                })
+            return base
+
+        gathered_enriched = await asyncio.gather(
+            *[_enrich_film(f) for f in films[:8]],
+            return_exceptions=True,
+        )
+        recommendations = [r for r in gathered_enriched if isinstance(r, dict)]
+
+        return {
+            "recommendations": recommendations,
+            "query": user_text,
+            "count": len(recommendations),
+            "timestamp": time.time(),
+        }
+
+    except Exception as e:
+        latency = time.monotonic() - t0
+        logger.error(f"get_recommendations failed: {e}")
+        pool.report(entry, code=500, latency=latency)
+        return {"error": str(e), "recommendations": [], "count": 0}
+
+
+async def find_film_streams(title: str, year: int | None, category: str = "movies", vk_token: str | None = None) -> list[dict]:
+    """
+    Search ALL providers simultaneously. Returns up to 8 sources sorted by reliability.
+    Priority: torrent > yts > vk > rutube > kodik > hdrezka > filmix > youtube
+    """
+    year_str = str(year) if year else ""
+    query = f"{title} {year_str}".strip()
+
+    _PRIO = {"torrent": 0, "yts": 1, "vk": 2, "rutube": 3,
+             "kodik": 4, "hdrezka": 5, "filmix": 6, "youtube": 7}
+
+    all_results = await aggregate_search(query, category, platform="all", vk_token=vk_token)
+    all_results.sort(key=lambda r: _PRIO.get(r.provider, 5))
+
+    seen_urls: set[str] = set()
+    results: list[dict] = []
+    for sr in all_results:
+        if sr.url not in seen_urls:
+            seen_urls.add(sr.url)
+            results.append(sr.to_dict())
+
+    logger.info(f"[FILM_STREAMS] '{title}' ({year}) → {len(results)} streams")
+    return results[:8]
+
+
+def _tmdb_relevance(item: dict, query: str) -> float:
+    """Score how well a TMDB result matches the query — higher is better."""
+    q = query.lower().strip()
+    title = (item.get("title") or "").lower()
+    orig  = (item.get("title_orig") or "").lower()
+    score = 0.0
+    if title == q or orig == q:
+        score += 100
+    elif title.startswith(q) or orig.startswith(q):
+        score += 60
+    elif q in title or q in orig:
+        score += 30
+    score += (item.get("popularity") or 0) * 0.01
+    score += (item.get("rating") or 0) * 1.5
+    return score
+
+
+async def search_by_title_tmdb(query: str, category: str = "movies") -> dict:
+    """
+    Search mode: TMDB movies + TV → merged cards, streams lazy-loaded on click.
+    Returns `results` list with TMDB metadata as film cards.
+    """
+    # 1. Search movies and TV series in parallel
+    movie_results, tv_results = await asyncio.gather(
+        tmdb_search_movie(query, language="ru-RU", limit=6),
+        tmdb_search_tv(query, language="ru-RU", limit=6),
+    )
+
+    # 2. If both empty → fallback to aggregate_search
+    if not movie_results and not tv_results:
+        logger.info(f"[TMDB SEARCH] No results for {query!r}, falling back to aggregate_search")
+        provider_results = await aggregate_search(query, category)
+        return {
+            "metadata": {"query": query, "skipped_ai": True},
+            "results": [r.to_dict() for r in provider_results],
+            "count": len(provider_results),
+            "timestamp": time.time(),
+        }
+
+    # 3. Merge and sort by relevance
+    all_tmdb = movie_results + tv_results
+    all_tmdb.sort(key=lambda x: _tmdb_relevance(x, query), reverse=True)
+
+    # 4. Convert to card format (no stream URL — lazy via /film/streams or /tv/.../seasons)
+    results = []
+    for m in all_tmdb[:10]:
+        if not m.get("title"):
+            continue
+        results.append({
+            "title":       m["title"],
+            "year":        m.get("year", ""),
+            "rating":      m.get("rating"),
+            "poster":      m.get("poster"),
+            "thumbnail":   m.get("poster"),
+            "description": m.get("description", ""),
+            "genres":      m.get("genres", []),
+            "duration":    m.get("duration"),
+            "provider":    "tmdb",
+            "source_type": "tmdb",
+            "url":         "",
+            "channel":     f"TMDB ★{m.get('rating', '?')} · {m.get('year', '')}",
+            "tmdb_id":     m.get("tmdb_id"),
+            "title_orig":  m.get("title_orig", ""),
+            "media_type":  m.get("media_type", "movie"),
+        })
+
+    logger.info(
+        f"[TMDB SEARCH] {query!r} → {len(results)} results "
+        f"(movies={len(movie_results)}, tv={len(tv_results)})"
+    )
+    return {
+        "metadata": {"query": query, "skipped_ai": True, "source": "tmdb"},
+        "results":  results,
+        "count":    len(results),
+        "timestamp": time.time(),
+    }
+
+
 _MOOD_WORDS = {
     "хочу", "хочется", "грустно", "грустный", "грустное", "настроение",
     "атмосфера", "атмосферный", "чувствую", "чувство", "посоветуй",
@@ -394,6 +681,11 @@ async def execute_search(
     """
     logger.info(f"Starting search: '{user_text}' [{category}] platform={platform} popularity={popularity} mode={mode}")
 
+    # Auto-detect recommend mode from trigger words
+    if _has_recommend_trigger(user_text):
+        logger.info(f"[SEARCH→RECOMMEND] Trigger detected in: {user_text!r}")
+        return await get_recommendations(user_text, category)
+
     cached = await _cache.get(user_text, category, platform, popularity)
     if cached is not None:
         logger.info(f"[CACHE HIT] '{user_text}' ({category}|{platform}|{popularity})")
@@ -404,9 +696,46 @@ async def execute_search(
 
     skip_gemini = (mode == "search") or _is_title_query(user_text)
 
+    # ── Конкретный провайдер выбран → прямой поиск без AI и TMDB ───────────────
+    _DIRECT_PLATFORMS = {"youtube", "vk", "rutube", "filmix", "hdrezka", "kodik"}
+    if mode == "search" and platform in _DIRECT_PLATFORMS:
+        logger.info(f"[SEARCH] Direct platform={platform} for {user_text!r} — no AI, no TMDB")
+        direct_res = await aggregate_search(user_text.strip(), category, platform=platform)
+        results = [r.to_dict() for r in direct_res]
+        payload = {
+            "metadata": {"query": user_text, "platform": platform, "skipped_ai": True},
+            "results": results,
+            "count": len(results),
+            "timestamp": time.time(),
+            "platform": platform,
+            "popularity": popularity,
+        }
+        await _cache.set(user_text, category, payload, platform, popularity)
+        return payload
+
+    # ── Торрент — TorAPI без TMDB ────────────────────────────────────────────
+    if mode == "search" and platform == "torrent":
+        torrent_res = await aggregate_search(user_text.strip(), category, platform="torrent")
+        results = [r.to_dict() for r in torrent_res]
+        payload = {
+            "metadata": {"query": user_text, "skipped_ai": True},
+            "results": results,
+            "count": len(results),
+            "timestamp": time.time(),
+            "platform": platform,
+            "popularity": popularity,
+        }
+        await _cache.set(user_text, category, payload, platform, popularity)
+        return payload
+
+    # ── Search mode + all → TMDB-first (фильмы с постерами) ─────────────────
+    if mode == "search":
+        logger.info(f"[SEARCH] Mode=search+all → TMDB pipeline for {user_text!r}")
+        return await search_by_title_tmdb(user_text.strip(), category)
+
+    # ── Mood / recommend auto-detect ─────────────────────────────────────────
     if skip_gemini:
-        logger.info(f"[SEARCH] Direct title search — skipping Gemini and suffix (mode={mode})")
-        # Use the raw query without any suffix so exact titles like "КВН" work
+        logger.info(f"[SEARCH] Direct title search — skipping Gemini (mode={mode})")
         target_query = user_text.strip()
         refined_data = {"query": target_query, "language": "ru", "skipped_ai": True}
     else:
@@ -416,16 +745,11 @@ async def execute_search(
 
     provider_results = await aggregate_search(target_query, category, platform=platform)
     results = [item.to_dict() for item in provider_results]
+    logger.info(f"[SEARCH] {len(results)} results from providers (platform={platform})")
 
-    logger.info(f"[SEARCH] >> {len(results)} results from providers (platform={platform})")
-
-    # Enrich with TMDB posters/descriptions
     results = await enrich_with_tmdb(results)
-    logger.info("[SEARCH] TMDB enrichment done")
-
-    # Enrich remaining empty descriptions with Groq
+    results = await enrich_with_kinopoisk(results)
     results = await enrich_with_groq(results)
-    logger.info("[SEARCH] Groq enrichment done")
 
     payload = {
         "metadata":   refined_data,

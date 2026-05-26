@@ -61,6 +61,58 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> hlsStart(String url) async {
+    final res = await http.post(
+      Uri.parse('$_base/hls/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'url': url}),
+    ).timeout(const Duration(seconds: 30));
+    if (res.statusCode != 200) throw Exception('HLS start failed: ${res.statusCode}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> hlsStatus(String streamId) async {
+    final res = await http.get(
+      Uri.parse('$_base/hls/$streamId/status'),
+    ).timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) throw Exception('HLS status failed: ${res.statusCode}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+
+  // ── VK Auth ─────────────────────────────────────────────────────────────
+
+  Future<String> vkAuthUrl() async {
+    final origin = html.window.location.origin;
+    final callback = '$origin/vk-callback';
+    final res = await http.get(
+      Uri.parse('$_base/vk/auth-url?redirect_uri=${Uri.encodeComponent(callback)}'),
+    ).timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) throw Exception('VK auth-url failed');
+    return (jsonDecode(res.body) as Map)['url'] as String;
+  }
+
+  Future<Map<String, dynamic>> vkSetToken(String token, int userId) async {
+    final res = await http.post(
+      Uri.parse('$_base/vk/set-token'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'access_token': token, 'user_id': userId}),
+    ).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) throw Exception('VK set-token: ${res.statusCode}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> vkStatus() async {
+    final res = await http.get(Uri.parse('$_base/vk/status'))
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) return {'logged_in': false};
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<void> vkLogout() async {
+    await http.post(Uri.parse('$_base/vk/logout'))
+        .timeout(const Duration(seconds: 10));
+  }
   Future<List<Room>> listRooms() async {
     final res = await http.get(Uri.parse('$_base/rooms'))
         .timeout(const Duration(seconds: 10));

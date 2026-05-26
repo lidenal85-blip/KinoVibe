@@ -162,9 +162,7 @@ class TorrentProvider(BaseProvider):
 
     # ── Search: apibay (Pirate Bay API) ─────────────────────────────────────
 
-    async def _search_apibay(self, query: str, category: str) -> list[SearchResult]:
-        # apibay category codes: 200=Video, 201=Movies, 202=Movies DVDR, 207=HD Movies
-        cat_code = "201" if category in ("movies", "shorts") else "205" if category == "series" else "200"
+    async def _apibay_query(self, query: str, cat_code: str) -> list[SearchResult]:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
                 r = await c.get(
@@ -174,11 +172,9 @@ class TorrentProvider(BaseProvider):
             if r.status_code != 200:
                 logger.warning(f"apibay returned HTTP {r.status_code}")
                 return []
-
             items = r.json()
             if not items or (len(items) == 1 and items[0].get("name") == "No results returned"):
                 return []
-
             results = []
             for item in items[:10]:
                 info_hash = item.get("info_hash", "")
@@ -199,11 +195,32 @@ class TorrentProvider(BaseProvider):
                         "source": "apibay",
                     },
                 ))
-            logger.info(f"apibay: found {len(results)} results for '{query}'")
             return results
         except Exception as e:
-            logger.error(f"apibay search failed: {e}")
+            logger.error(f"apibay query cat={cat_code} failed: {e}")
             return []
+
+    async def _search_apibay(self, query: str, category: str) -> list[SearchResult]:
+        # apibay category codes: 200=Video, 207=HD Movies, 201=Movies, 205=TV
+        # Try HD first (207), fallback to generic Video (200)
+        if category in ("movies", "shorts"):
+            primary_cat, fallback_cat = "207", "200"
+        elif category == "series":
+            primary_cat, fallback_cat = "205", "200"
+        else:
+            primary_cat, fallback_cat = "200", None
+
+        # Add "rus" suffix to improve Russian content discovery
+        ru_query = f"{query} rus"
+        results = await self._apibay_query(ru_query, primary_cat)
+        if not results:
+            # Try without russian suffix
+            results = await self._apibay_query(query, primary_cat)
+        if not results and fallback_cat:
+            results = await self._apibay_query(query, fallback_cat)
+
+        logger.info(f"apibay: found {len(results)} results for '{query}'")
+        return results
 
     # ── Search: Jackett (legacy) ─────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ def get_provider(name: str) -> Optional[BaseProvider]:
     return _by_name.get(name)
 
 
-async def aggregate_search(query: str, category: str, platform: str = "all") -> list[SearchResult]:
+async def aggregate_search(query: str, category: str, platform: str = "all", vk_token: str | None = None) -> list[SearchResult]:
     """Fan out search to enabled providers, optionally filtered by platform name."""
     if platform and platform != "all":
         enabled = [p for p in REGISTRY if p.enabled and p.name == platform]
@@ -54,7 +54,11 @@ async def aggregate_search(query: str, category: str, platform: str = "all") -> 
         logger.warning(f"No enabled providers for platform='{platform}'")
         return []
 
-    tasks = [p.search(query, category) for p in enabled]
+    tasks = [
+        p.search(query, category, vk_token=vk_token)
+        if p.name == "vk" else p.search(query, category)
+        for p in enabled
+    ]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
 
     results: list[SearchResult] = []

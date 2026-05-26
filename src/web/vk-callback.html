@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>VK Auth — KinoVibe</title>
+  <style>
+    body { background:#0d0d1a; color:#ccc; font-family:sans-serif;
+           display:flex; align-items:center; justify-content:center;
+           height:100vh; margin:0; flex-direction:column; gap:16px; }
+    .spinner { width:36px; height:36px; border:3px solid #222;
+               border-top-color:#0077ff; border-radius:50%;
+               animation:spin .7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    p { font-size:14px; opacity:.6; }
+  </style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <p id="msg">Авторизация VK...</p>
+  <script>
+    (async function() {
+      const hash = window.location.hash.slice(1);
+      const params = Object.fromEntries(new URLSearchParams(hash));
+      const token  = params.access_token;
+      const userId = parseInt(params.user_id, 10);
+
+      if (!token || !userId) {
+        document.getElementById('msg').textContent = 'Ошибка: токен не получен';
+        setTimeout(() => window.close(), 2000);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/vk/set-token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'include',
+          body: JSON.stringify({access_token: token, user_id: userId}),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          document.getElementById('msg').textContent =
+            'Вошли как ' + (data.name || 'пользователь') + '. Закрываем...';
+        } else {
+          document.getElementById('msg').textContent = 'Ошибка авторизации';
+        }
+      } catch(e) {
+        document.getElementById('msg').textContent = 'Сетевая ошибка: ' + e;
+      }
+      setTimeout(() => window.close(), 1200);
+    })();
+  </script>
+</body>
+</html>

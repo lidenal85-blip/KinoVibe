@@ -1,116 +1,162 @@
-# KinoVibe — Final Implementation Report
-**Date:** 2026-05-21 | **Build:** Flutter 2542104 bytes | **Backend:** v5.0.0 | **Providers:** 7
+# KinoVibe — HLS Streaming Report v5.2.0
+**Дата:** 2026-05-22 | **Backend:** v5.2.0
 
 ---
 
-## Task Status
-
-| Task | Status | Notes |
-|------|--------|-------|
-| 1. Rutube provider | ✅ Done | 43 results, yt-dlp stream extraction |
-| 2. Filmix provider | ✅ Done | filmix.biz/ac embed, graceful 404 fallback |
-| 3. TMDB enrichment | ✅ Done | JWT Bearer, fills thumbnail + description |
-| 4. Groq descriptions | ✅ Done | llama-3.1-8b-instant, parallel gather |
-| 5. Deep link rooms | ✅ Done | /room/CODE → /?room=CODE nginx + Flutter join |
-| 6. JS Clipboard | ✅ Done | dart:js navigator.clipboard + execCommand fallback |
-| 7. PWA manifest | ✅ Done | name=KinoVibe, theme=#00d4ff, standalone |
-| 8. WebTorrent player | ✅ Done | /torrent_player.html, iframe in watch_screen |
-| 9. Search error fix | ✅ Done | YouTube timeout reduced to 15s |
-| 10. Stream 422 magnet | ✅ Done | Returns {protocol:magnet} directly |
-| Android APK | ❌ Skip | Android SDK not installed on server |
-
----
-
-## Provider Registry
-
-| Provider | Source | Enabled | Notes |
-|----------|--------|---------|-------|
-| youtube | yt-dlp ytsearch | Always | 18s timeout |
-| vk | Web scrape | Always | 0 results without token |
-| kodik | API | Requires KODIK_TOKEN | Embed player |
-| hdrezka | rezka.ag scrape | Always | iframe/open-on-site |
-| **rutube** | rutube.ru API | Always | **NEW** |
-| **filmix** | filmix.biz API | Always | **NEW**, embed |
-| torrent | kinozal + apibay | Always | WebTorrent player |
-
----
-
-## Enrichment Pipeline (search.py)
-
+## ЗАДАЧА 1 — Зависимости ✅
 ```
-aggregate_search() → enrich_with_tmdb() → enrich_with_groq() → results
+aria2 1.37.0
+ffmpeg 6.1.1-3ubuntu5
 ```
 
-- **TMDB**: Fills missing thumbnails (`w300`) and descriptions from TMDB (JWT token in .env)
-- **Groq**: 2-sentence Russian descriptions via llama-3.1-8b-instant for items still missing description
-- Both run concurrently per-item via `asyncio.gather(return_exceptions=True)`
+---
+
+## ЗАДАЧА 2 — HLS эндпоинты ✅
+
+**POST /hls/start**
+- Генерирует `stream_id` (uuid4 hex[:8])
+- Создаёт `/tmp/kv_streams/{stream_id}/`
+- Запускает pipeline: yt-dlp `-g` (android client) → ffmpeg HLS segmentation
+- Отвечает мгновенно `{"stream_id", "hls_url", "status":"processing"}`
+
+**GET /hls/{stream_id}/status**
+- Считает `.ts` файлы в директории стрима
+- `ready` если m3u8 существует и сегментов >= 2
+- Возвращает `{status, segments, m3u8, error}`
+
+**Тест:**
+```
+stream_id: be52ccf8
+status: ready через ~25 секунд
+segments: 4 (6.2MB total)
+```
 
 ---
 
-## Flutter Features
+## ЗАДАЧА 3 — Nginx для HLS ✅
 
-- **dart:js clipboard** — works on HTTP + HTTPS
-- **Watch Party deep link** — `/?room=CODE` auto-joins from URL
-- **WebTorrent player** — magnet links → `/torrent_player.html?magnet=…` iframe
-- **sourceType routing** — `magnet` → WebTorrent, `site` → open-on-site, `embed` → iframe, `video` → yt-dlp
-- **Open on site button** — AppBar icon for all providers
-- **HDRezka fallback UI** — prominent "Open on HDREZKA" button when embed fails
-- **Section rows on home** — Популярное/Комедии/Боевики/Аниме async load
+**kinovibe-ip (порт 8080):**
+```nginx
+location /hls/ {
+    alias /tmp/kv_streams/;
+    add_header Cache-Control no-cache;
+    add_header Access-Control-Allow-Origin *;
+    types { application/vnd.apple.mpegurl m3u8; video/mp2t ts; }
+}
+```
+
+**kinovibe-html (порт 8081):** аналогично + `/hls-watch/` → `index.html`
+
+**Тест:** `curl -sI http://localhost:8080/hls/be52ccf8/stream.m3u8`  
+→ `Content-Type: application/vnd.apple.mpegurl` ✓
 
 ---
 
-## Android APK
+## ЗАДАЧА 4 — Cleanup старых стримов ✅
 
-**Cannot build — Android SDK not installed on this server.**
+- `@app.on_event("startup")` запускает `asyncio.create_task(_cleanup_old_streams())`
+- Каждые 30 минут удаляет директории в `/tmp/kv_streams/` старше 1 часа
+- Очищает `_active_streams` словарь
 
-To build on a development machine:
+---
+
+## ЗАДАЧА 5+6 — HTML фронтенд ✅
+
+**hls.js 1.4.12** добавлен в `<head>`
+
+**startHLS(url, title):**
+- POST `/hls/start` → получает stream_id
+- Показывает индикатор "◈ Подготовка потока..."
+- Поллинг `/hls/{id}/status` каждые 3 секунды
+- При segments >= 2: инициализирует Hls.js плеер
+- Fallback на нативный `<video>` для Safari (MSE-supported HLS)
+
+**openPlayer() обновлён:**
+- YouTube → iframe embed (без изменений)
+- embed source → iframe
+- magnet → torrent_player.html
+- Любой другой URL → `startHLS()` (новый HLS пайплайн)
+
+**"◈ Смотреть вместе" кнопка:**
+- Копирует `window.location.origin + "/hls-watch/" + streamId`
+- Открывший ссылку смотрит тот же HLS стрим (те же сегменты в /tmp/kv_streams/)
+- Подсвечивается зелёным когда HLS стрим готов
+
+---
+
+## Статус
+
+| Компонент | Статус |
+|-----------|--------|
+| kinovibe (FastAPI) | ✅ running :8110 |
+| Nginx :8080 + /hls/ | ✅ Content-Type m3u8 |
+| Nginx :8081 + /hls/ | ✅ |
+| HLS pipeline test | ✅ ready 25s, 4 segments |
+| Cleanup task | ✅ 30min interval |
+| HTML hls.js player | ✅ |
+
+---
+
+## Быстрый тест
+
 ```bash
-cd /var/www/kinovibe/src
-flutter build apk --release --split-per-abi
-# → build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+# Запуск HLS стрима
+curl -X POST http://localhost:8110/hls/start \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"}'
+# → {"stream_id":"be52ccf8","hls_url":"/hls/be52ccf8/stream.m3u8","status":"processing"}
+
+# Проверка статуса (через ~25с)
+curl http://localhost:8110/hls/be52ccf8/status
+# → {"status":"ready","segments":4,"m3u8":true}
+
+# HLS файл через nginx
+curl -I http://localhost:8080/hls/be52ccf8/stream.m3u8
+# → 200 OK, Content-Type: application/vnd.apple.mpegurl
 ```
-minSdkVersion is already 21 (set by Flutter 3.x). No `build.gradle` changes needed.
 
 ---
+## subtitle.py v2.0 — Оптимизация (2026-05-23)
 
-## Key Endpoints
+### Задачи выполнены (8/8)
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Service status |
-| `POST /search` | Search (7 providers, TMDB+Groq enrichment) |
-| `GET /stream?url=…&provider=…` | Stream extraction (magnet → returns directly) |
-| `POST /rooms/create` | Create Watch Party |
-| `WS /api/ws/{peer_id}` | Watch Party signaling |
-| `GET /room/{CODE}` | Deep link redirect via nginx |
-| `GET /torrent_player.html` | WebTorrent browser player |
+| # | Задача | Статус |
+|---|--------|--------|
+| 1 | WAV 16kHz mono — yt-dlp→ffmpeg resample, удаление tmp файлов | ✅ |
+| 2 | VAD фильтр: vad_filter=True, min_silence_duration_ms=500 | ✅ |
+| 3 | Кэш SHA256(url+lang), TTL 24ч, in-memory dict | ✅ |
+| 4 | Chunked: ffmpeg -f segment -segment_time 600, asyncio.gather параллельно | ✅ |
+| 5 | Preload Whisper pool (2×tiny/int8) при startup за ~6 сек | ✅ |
+| 6 | Параллельный TTS: asyncio.Queue, consumer генерирует пока Whisper пишет | ✅ |
+| 7 | Streaming VTT: append после каждых 25 сегментов, клиент видит результаты инкрементально | ✅ |
+| 8 | Автоочистка /tmp/kv_subs/{job_id}/ через 2ч, каждые 30 мин | ✅ |
 
----
-
-## Known Limitations
-
-- **VK**: 0 results without `VK_API_TOKEN` (page is JS-rendered)
-- **Filmix**: API returns 404 (filmix.biz/filmix.ac changed endpoints) — provider returns [] gracefully
-- **HDRezka iframe**: X-Frame-Options blocks embedding — "Open on site" button shown
-- **YouTube**: Times out 15-20% of requests — empty results on timeout
-- **TorrServer**: Not running — magnet streaming uses WebTorrent (browser-side)
-
----
-
-## Deployed Files
+### Архитектура pipeline
 
 ```
-/var/www/kinovibe/frontend/build/web/
-  main.dart.js          2542104 bytes (22:25)
-  torrent_player.html   5304 bytes
-  manifest.json         PWA: KinoVibe / #00d4ff
-  index.html            PWA meta tags
-
-/var/www/kinovibe/backend/providers/
-  rutube.py             NEW
-  filmix.py             NEW
-
-/etc/nginx/sites-available/
-  kinovibe              /room/(.+) redirect
-  kinovibe-ip           /room/(.+) redirect
+URL → yt-dlp/ffmpeg (WAV 16kHz mono)
+    → ffmpeg -f segment (10-мин чанки)
+    → asyncio.gather [Whisper Pool ×2]  ← параллельные транскрипции
+    → asyncio.Queue  ← сегменты по мере готовности
+    → Gemini translate (batches 25) + append VTT  ← streaming
+    → asyncio.Queue  ← переведённые сегменты
+    → edge-tts consumer  ← параллельная озвучка
+    → ffmpeg merge (silence-padded)  ← финальный MP3
 ```
+
+### Производительность (tiny/int8, 2 CPU)
+- Pool load: ~6 сек при старте
+- 3.5 мин видео: ~15 сек Whisper (4× realtime)
+- Первые субтитры доступны через ~20 сек (chunk 0)
+- Музыкальный контент: Whisper tiny с VAD не распознаёт пение → normal для STT
+
+### Endpoints
+- POST /subtitle/start  → {job_id}
+- GET  /subtitle/{job_id}/status  → прогресс + vtt_url + voice_url
+- GET  /subtitle/{job_id}/subtitles.vtt  → WebVTT (доступен частично)
+- GET  /subtitle/{job_id}/voice.mp3  → merged TTS audio
+
+### Конфигурация
+- WHISPER_MODEL=tiny (env var в .env)
+- tiny: 39MB RAM, ~4× realtime
+- base: 145MB RAM, ~1.5× realtime, лучшее качество

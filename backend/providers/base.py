@@ -10,25 +10,34 @@ class SearchResult:
     title: str
     url: str
     provider: str
-    source_type: str  # "video" | "embed" | "magnet"
+    source_type: str       # "video" | "embed" | "magnet"
     thumbnail: Optional[str] = None
     duration: Optional[int] = None
     channel: Optional[str] = None
     description: Optional[str] = None
+    source_title: Optional[str] = None  # original torrent/source filename
+    source_url: Optional[str] = None    # direct link to tracker page
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "url": self.url,
-            "thumbnail": self.thumbnail,
-            "duration": self.duration,
-            "channel": self.channel,
-            "provider": self.provider,
-            "source_type": self.source_type,
-            "description": self.description,
+        d = {
+            "id":           self.id,
+            "title":        self.title,
+            "url":          self.url,
+            "thumbnail":    self.thumbnail,
+            "duration":     self.duration,
+            "channel":      self.channel,
+            "provider":     self.provider,
+            "source_type":  self.source_type,
+            "description":  self.description,
         }
+        if self.source_title:
+            d["source_title"] = self.source_title
+        if self.source_url:
+            d["source_url"] = self.source_url
+        if self.extra:
+            d.update(self.extra)
+        return d
 
 
 @dataclass

@@ -21,6 +21,9 @@ class _HubScreenState extends State<HubScreen> {
   final _ctrl = TextEditingController();
   final _focus = FocusNode();
   bool _loading = false;
+  bool _vkLoggedIn = false;
+  String _vkName = '';
+  String _vkPhoto = '';
   String _category = 'movies';
   String _popularity = 'all';
   String _platform = 'all';
@@ -62,12 +65,51 @@ class _HubScreenState extends State<HubScreen> {
   void initState() {
     super.initState();
     _loadSections();
+    _checkVkStatus();
     // Handle Watch Party deep link: /?room=ROOMCODE
     final uri = Uri.parse(html.window.location.href);
     final roomCode = uri.queryParameters['room'];
     if (roomCode != null && roomCode.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _joinRoom(roomCode));
     }
+  }
+
+
+  Future<void> _checkVkStatus() async {
+    try {
+      final s = await _api.vkStatus();
+      if (mounted) setState(() {
+        _vkLoggedIn = s['logged_in'] == true;
+        _vkName  = (s['name']  ?? '') as String;
+        _vkPhoto = (s['photo'] ?? '') as String;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _vkLogin() async {
+    try {
+      final url = await _api.vkAuthUrl();
+      final popup = html.window.open(url, 'vk_oauth', 'width=600,height=520,scrollbars=yes');
+      await for (final _ in Stream.periodic(const Duration(milliseconds: 600))) {
+        if (popup.closed == true) break;
+      }
+      await _checkVkStatus();
+      if (mounted && _vkLoggedIn) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Вошли как $_vkName'),
+          backgroundColor: const Color(0xFF0077FF),
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('VK: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<void> _vkLogout() async {
+    await _api.vkLogout();
+    if (mounted) setState(() { _vkLoggedIn = false; _vkName = ''; _vkPhoto = ''; });
   }
 
   void _joinRoom(String code) {
@@ -250,23 +292,75 @@ class _HubScreenState extends State<HubScreen> {
               ]),
             ),
             const Spacer(),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AbyssalColors.success.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AbyssalColors.success.withOpacity(0.4)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(width: 6, height: 6,
-                      decoration: const BoxDecoration(color: AbyssalColors.success, shape: BoxShape.circle)),
-                  const SizedBox(width: 5),
-                  const Text('ONLINE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
-                      color: AbyssalColors.success, letterSpacing: 0.5)),
-                ],
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // VK auth button
+                GestureDetector(
+                  onTap: _vkLoggedIn ? _vkLogout : _vkLogin,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _vkLoggedIn
+                          ? const Color(0xFF0077FF).withOpacity(0.18)
+                          : Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: _vkLoggedIn
+                          ? const Color(0xFF0077FF).withOpacity(0.6)
+                          : Colors.white.withOpacity(0.15)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_vkLoggedIn && _vkPhoto.isNotEmpty) ...[
+                          ClipOval(child: Image.network(_vkPhoto,
+                              width: 18, height: 18, fit: BoxFit.cover)),
+                          const SizedBox(width: 5),
+                          Text(_vkName.split(' ').first,
+                              style: const TextStyle(fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF4D9FFF))),
+                        ] else ...[
+                          const Icon(Icons.person_rounded, size: 14,
+                              color: Color(0xFF0077FF)),
+                          const SizedBox(width: 4),
+                          Text(_vkLoggedIn ? _vkName.split(' ').first : 'VK',
+                              style: TextStyle(fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: _vkLoggedIn
+                                      ? const Color(0xFF4D9FFF)
+                                      : Colors.white54,
+                                  letterSpacing: 0.3)),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // ONLINE badge
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AbyssalColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AbyssalColors.success.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(width: 6, height: 6,
+                          decoration: const BoxDecoration(
+                              color: AbyssalColors.success,
+                              shape: BoxShape.circle)),
+                      const SizedBox(width: 5),
+                      const Text('ONLINE', style: TextStyle(fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: AbyssalColors.success, letterSpacing: 0.5)),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ),

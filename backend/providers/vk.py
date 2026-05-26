@@ -1,16 +1,16 @@
 """
 vk.py — VK Video provider
 
-Two search strategies:
-  1. API (preferred) — requires VK_API_TOKEN env var.
-  2. Web scraping — httpx GET https://vk.com/video?q={query}&search_own=0
-     Parses embedded JSON payload from the server-rendered page. VK renders
-     some video metadata server-side even for unauthenticated requests.
+Search strategy:
+  1. VK API (preferred) — requires VK_TOKEN env var.
+     Uses video.search, returns embed player URLs (source_type="embed").
+  2. Web scraping fallback — httpx GET https://vk.com/video?q={query}&search_own=0
+     Parses embedded JSON payload from the server-rendered page.
 
-Stream extraction uses yt-dlp in both cases.
+Stream extraction: embed iframe for API results; yt-dlp fallback for direct URLs.
 
 Environment variables:
-    VK_API_TOKEN — VK API access token (optional; enables API search)
+    VK_TOKEN — VK API access token (os.getenv("VK_TOKEN"))
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ logger = logging.getLogger("kinovibe.providers.vk")
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YTDLP = os.path.join(_BACKEND_DIR, "venv", "bin", "yt-dlp")
 
-VK_TOKEN = os.environ.get("VK_API_TOKEN", "")
 VK_API = "https://api.vk.com/method"
 VK_API_VERSION = "5.131"
 
@@ -43,34 +42,50 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Regex to pull embedded JSON arrays from VK's page source
-_VK_JSON_RE = re.compile(r'\["video",\s*\{.*?\}\]', re.DOTALL)
-# Simpler: look for ownerid_videoid pairs in any form
+# Regex patterns for web scraping fallback
 _VIDEO_ID_RE = re.compile(r'"(-?\d{5,})_(\d{5,})"')
 _TITLE_RE = re.compile(r'"title"\s*:\s*"([^"]{3,80})"')
 _THUMB_RE = re.compile(r'"photo_800"\s*:\s*"([^"]+)"|"photo_640"\s*:\s*"([^"]+)"|"photo_320"\s*:\s*"([^"]+)"')
 _DURATION_RE = re.compile(r'"duration"\s*:\s*(\d+)')
 
 
+def _pick_thumbnail(image_list: list) -> str | None:
+    """Pick the largest available thumbnail from VK image array."""
+    if not image_list:
+        return None
+    # VK returns sorted list; last entry is usually largest
+    for img in reversed(image_list):
+        if isinstance(img, dict) and img.get("url"):
+            return img["url"]
+    return None
+
+
 class VKProvider(BaseProvider):
     name = "vk"
-    source_type = "video"
+    source_type = "embed"
 
     @property
     def enabled(self) -> bool:
-        # Always enabled — API token enables richer results, web fallback works without it
         return True
 
-    async def search(self, query: str, category: str) -> list[SearchResult]:
-        token = os.environ.get("VK_API_TOKEN", "")
+    async def search(self, query: str, category: str, vk_token: str | None = None) -> list[SearchResult]:
+        token = vk_token or os.getenv("VK_TOKEN", "") or os.environ.get("VK_API_TOKEN", "")
         if token:
+            src = "user" if vk_token else "global"
+            logger.debug(f"VK: using {src} token")
             results = await self._search_api(query, token)
             if results:
                 return results
-        # Fallback: web scraping
-        return await self._search_web(query)
+            # API returned nothing — try web scraping as last resort
+            return await self._search_web(query)
+        # No token: VK API requires auth since 2024, web scraping redirects to vkvideo.ru login
+        logger.info("VK: no VK_TOKEN set — skipping (set VK_TOKEN env var to enable VK search)")
+        return []
+
+    # ── VK API search ────────────────────────────────────────────────────────
 
     async def _search_api(self, query: str, token: str) -> list[SearchResult]:
+        """Search via VK API video.search; returns embed-URL results."""
         try:
             rus_query = f"русский озвучка {query}"
             async with httpx.AsyncClient(timeout=15) as client:
@@ -82,39 +97,48 @@ class VKProvider(BaseProvider):
                         "v": VK_API_VERSION,
                         "count": 10,
                         "hd": 1,
-                        "filters": "mp4",
                     },
                 )
             data = r.json()
+
             if "error" in data:
-                logger.warning(f"VK API error: {data['error']}")
+                code = data["error"].get("error_code", 0)
+                msg = data["error"].get("error_msg", "")
+                logger.warning(f"VK API error {code}: {msg}")
                 return []
+
             items = data.get("response", {}).get("items", [])
             results = []
             for item in items:
-                vid_id = f"{item['owner_id']}_{item['id']}"
-                thumbnail = (
-                    item.get("photo_800")
-                    or item.get("photo_640")
-                    or item.get("photo_320")
-                )
+                player_url = item.get("player", "")
+                if not player_url:
+                    continue
+
+                vid_id = f"{item.get('owner_id', '')}_{item.get('id', '')}"
+                thumbnail = _pick_thumbnail(item.get("image", []))
+
                 results.append(SearchResult(
                     id=vid_id,
                     title=item.get("title", ""),
-                    url=f"https://vk.com/video{vid_id}",
+                    url=player_url,
                     thumbnail=thumbnail,
                     duration=item.get("duration"),
                     channel=str(item.get("owner_id", "")),
                     provider=self.name,
-                    source_type=self.source_type,
+                    source_type="embed",
                 ))
+
+            logger.info(f"VK API: {len(results)} results for '{query}'")
             return results
+
         except Exception as e:
             logger.error(f"VK API search failed: {e}")
             return []
 
+    # ── Web scraping fallback ────────────────────────────────────────────────
+
     async def _search_web(self, query: str) -> list[SearchResult]:
-        """Search via https://vk.com/video?q={query}&search_own=0 without token."""
+        """Scrape https://vk.com/video?q={query} without token."""
         try:
             url = f"https://vk.com/video?q={quote(query)}&search_own=0"
             async with httpx.AsyncClient(
@@ -127,7 +151,6 @@ class VKProvider(BaseProvider):
                 return []
 
             html = r.text
-            # Extract video id pairs and try to match with titles/thumbnails
             id_matches = _VIDEO_ID_RE.findall(html)
             title_matches = _TITLE_RE.findall(html)
             thumb_matches = _THUMB_RE.findall(html)
@@ -146,26 +169,40 @@ class VKProvider(BaseProvider):
                 thumbnail = next((g for g in thumb_groups if g), None)
                 duration = int(duration_matches[i]) if i < len(duration_matches) else None
 
+                # Build embed URL from owner/video id
+                embed_url = f"https://vk.com/video_ext.php?oid={owner_id}&id={video_id}"
+
                 results.append(SearchResult(
                     id=vid_key,
                     title=title,
-                    url=f"https://vk.com/video{vid_key}",
+                    url=embed_url,
                     thumbnail=thumbnail,
                     duration=duration,
                     channel=owner_id,
                     provider=self.name,
-                    source_type=self.source_type,
+                    source_type="embed",
                 ))
                 if len(results) >= 10:
                     break
 
-            logger.info(f"VK web search: found {len(results)} results for '{query}'")
+            logger.info(f"VK web scrape: {len(results)} results for '{query}'")
             return results
+
         except Exception as e:
             logger.error(f"VK web search failed: {e}")
             return []
 
+    # ── Stream extraction ────────────────────────────────────────────────────
+
     async def get_stream(self, url: str) -> StreamInfo:
+        """Embed URLs are played as iframes; direct vk.com URLs use yt-dlp."""
+        if "video_ext.php" in url or url.startswith("https://vk.com/video_ext"):
+            # Already an embed URL — return as-is for iframe playback
+            return StreamInfo(
+                stream_url=url,
+                provider=self.name,
+                protocol="embed",
+            )
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._ytdlp_stream, url)
 
@@ -182,5 +219,5 @@ class VKProvider(BaseProvider):
                     protocol="http",
                 )
         except Exception as e:
-            logger.error(f"VK stream extraction failed: {e}")
+            logger.error(f"VK yt-dlp stream failed: {e}")
         raise ValueError(f"Could not extract VK stream for {url}")

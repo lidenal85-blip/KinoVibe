@@ -51,6 +51,16 @@ class _WatchScreenState extends State<WatchScreen> {
 
   html.VideoElement? _videoEl;
 
+  // YouTube HLS state
+  String? _ytHlsStreamId;
+  String _ytHlsStatus = 'idle';
+  int _ytHlsSegments = 0;
+  String? _ytHlsError;
+  bool _ytHlsPolling = false;
+
+  static bool _isYoutubeUrl(String url) =>
+      url.contains('youtube.com') || url.contains('youtu.be');
+
   static String _makePeerId() {
     const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final r = Random.secure();
@@ -81,6 +91,13 @@ class _WatchScreenState extends State<WatchScreen> {
     // Site-only results (kinozal without magnet) → direct-open UI, no backend call
     if (_movie.isSiteOnly) {
       setState(() { _streamLoading = false; _streamError = null; });
+      return;
+    }
+
+    // YouTube → HLS pipeline (bypass direct stream extraction)
+    if (_movie.provider == 'youtube' || _isYoutubeUrl(target)) {
+      setState(() { _streamLoading = false; _streamError = null; });
+      _startYoutubeHls(target);
       return;
     }
 
@@ -254,6 +271,56 @@ class _WatchScreenState extends State<WatchScreen> {
   void dispose() {
     _ws?.sink.close();
     super.dispose();
+  }
+
+  Future<void> _startYoutubeHls(String url) async {
+    setState(() {
+      _ytHlsStreamId = null;
+      _ytHlsStatus = 'processing';
+      _ytHlsSegments = 0;
+      _ytHlsError = null;
+    });
+    try {
+      final data = await _api.hlsStart(url);
+      final sid = data['stream_id'] as String? ?? '';
+      if (!mounted || sid.isEmpty) return;
+      setState(() => _ytHlsStreamId = sid);
+      _pollYoutubeHls(sid);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _ytHlsStatus = 'error';
+        _ytHlsError = e.toString();
+      });
+    }
+  }
+
+  void _pollYoutubeHls(String streamId) {
+    if (_ytHlsPolling) return;
+    _ytHlsPolling = true;
+    Future.doWhile(() async {
+      await Future.delayed(const Duration(seconds: 3));
+      if (!mounted) { _ytHlsPolling = false; return false; }
+      try {
+        final data = await _api.hlsStatus(streamId);
+        final status = data['status'] as String? ?? 'processing';
+        final segments = (data['segments'] as num?)?.toInt() ?? 0;
+        if (!mounted) { _ytHlsPolling = false; return false; }
+        setState(() {
+          _ytHlsStatus = status;
+          _ytHlsSegments = segments;
+          if (status == 'error') _ytHlsError = data['error'] as String? ?? 'Ошибка потока';
+          if (status == 'ready' || segments >= 2) _ytHlsStatus = 'ready';
+        });
+        if (_ytHlsStatus == 'error' || _ytHlsStatus == 'ready') {
+          _ytHlsPolling = false;
+          return false;
+        }
+        return true;
+      } catch (_) {
+        return true;
+      }
+    });
   }
 
   void _openOnSite() {
@@ -570,6 +637,47 @@ class _WatchScreenState extends State<WatchScreen> {
       );
     }
 
+    // YouTube → HLS player
+    if (_movie.provider == 'youtube' || _isYoutubeUrl(_movie.url)) {
+      if (_ytHlsStatus == 'error') {
+        return _PlayerShell(
+          height: h,
+          child: Center(child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline_rounded, color: Colors.red, size: 48),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  _ytHlsError ?? 'Ошибка HLS потока',
+                  style: const TextStyle(color: AbyssalColors.textMuted, fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          )),
+        );
+      }
+      if (_ytHlsStatus == 'ready' && _ytHlsStreamId != null) {
+        return _YtHlsPlayer(streamId: _ytHlsStreamId!, height: h);
+      }
+      return _PlayerShell(
+        height: h,
+        child: Center(child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const CircularProgressIndicator(color: AbyssalColors.cyan),
+            const SizedBox(height: 16),
+            Text(
+              'Подготовка потока... $_ytHlsSegments сегментов',
+              style: const TextStyle(color: AbyssalColors.textMuted, fontSize: 13),
+            ),
+          ],
+        )),
+      );
+    }
+
     if (_streamLoading) {
       return _PlayerShell(
         height: h,
@@ -816,6 +924,72 @@ class _WebVideoPlayerState extends State<_WebVideoPlayer> {
       width: double.infinity,
       height: widget.height,
       child: HtmlElementView(viewType: _viewId));
+}
+
+// ─── _YtHlsPlayer ─────────────────────────────────────────────────────────────
+
+class _YtHlsPlayer extends StatefulWidget {
+  final String streamId;
+  final double height;
+  const _YtHlsPlayer({required this.streamId, required this.height});
+
+  @override
+  State<_YtHlsPlayer> createState() => _YtHlsPlayerState();
+}
+
+class _YtHlsPlayerState extends State<_YtHlsPlayer> {
+  late final String _viewId;
+
+  @override
+  void initState() {
+    super.initState();
+    _viewId = 'yt-hls-${DateTime.now().microsecondsSinceEpoch}';
+    _register();
+  }
+
+  void _register() {
+    final hlsPath = '/hls/${widget.streamId}/stream.m3u8';
+    final videoId = 'yt-hls-vid-${widget.streamId}';
+
+    ui_web.platformViewRegistry.registerViewFactory(_viewId, (int id) {
+      final video = html.VideoElement()
+        ..id = videoId
+        ..controls = true
+        ..autoplay = true
+        ..style.width = '100%'
+        ..style.height = '100%'
+        ..style.background = '#000';
+
+      Future.delayed(const Duration(milliseconds: 300), () {
+        js.context.callMethod('eval', ['''
+          (function() {
+            var v = document.getElementById('$videoId');
+            if (!v) return;
+            if (window.Hls && Hls.isSupported()) {
+              var h = new Hls({debug: false});
+              h.loadSource('$hlsPath');
+              h.attachMedia(v);
+              h.on(Hls.Events.MANIFEST_PARSED, function() {
+                v.play().catch(function() {});
+              });
+            } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+              v.src = '$hlsPath';
+              v.play().catch(function() {});
+            }
+          })();
+        ''']);
+      });
+
+      return video;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    height: widget.height,
+    child: HtmlElementView(viewType: _viewId),
+  );
 }
 
 // ─── _PartyBadge ──────────────────────────────────────────────────────────────
