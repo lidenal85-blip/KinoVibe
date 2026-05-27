@@ -634,8 +634,8 @@ async def get_stream_url(url: str, title: str = "", provider: Optional[str] = No
 
     logger.info(f"[STREAM] Routing request for: {url[:60]} (provider suggestion: {provider})")
 
-    # Magnet links → try TorrServer first, fall back to raw magnet (WebTorrent)
-    if url.startswith("magnet:"):
+    # Magnet links + .torrent URLs → TorrServer
+    if url.startswith("magnet:") or (url.endswith(".torrent") or "/download.php" in url or "dl.kinozal" in url or "rutracker.org/forum/dl" in url):
         ts = await _torrserver_stream(url, title)
         if ts:
             logger.info(f"[STREAM] TorrServer stream: {ts['stream_url'][:80]}")
@@ -752,6 +752,29 @@ async def route_query(q: str):
         raise HTTPException(status_code=400, detail="q required")
     return route_to_dict(route_input(q))
 
+
+
+@app.get("/home")
+async def home_sections():
+    import httpx, os
+    KEY = os.environ.get("TMDB_API_KEY", "")
+    BASE = "https://api.themoviedb.org/3"
+    IMG = "https://image.tmdb.org/t/p/w500"
+    headers = {"Authorization": f"Bearer {KEY}"}
+    def fmt(items):
+        out = []
+        for m in items:
+            title = m.get("title") or m.get("name") or ""
+            poster = m.get("poster_path")
+            out.append({"title": title, "poster": f"{IMG}{poster}" if poster else None, "year": (m.get("release_date") or m.get("first_air_date") or "")[:4], "rating": str(round(m.get("vote_average",0),1)), "description": m.get("overview"), "url": "", "provider": "tmdb", "category": "movies", "source_type": "video", "tmdb_id": m.get("id")})
+        return out
+    async with httpx.AsyncClient(timeout=8, headers=headers) as c:
+        results = await asyncio.gather(c.get(f"{BASE}/movie/popular?language=ru&page=1"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=35&sort_by=popularity.desc"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=28&sort_by=popularity.desc"), c.get(f"{BASE}/discover/tv?language=ru&with_genres=16&sort_by=popularity.desc"), return_exceptions=True)
+    def safe(r):
+        if isinstance(r, Exception): return []
+        try: return r.json().get("results",[])[:12]
+        except: return []
+    return {"popular": fmt(safe(results[0])), "comedy": fmt(safe(results[1])), "action": fmt(safe(results[2])), "anime": fmt(safe(results[3]))}
 
 @app.websocket("/ws/{peer_id}")
 async def websocket_endpoint(ws: WebSocket, peer_id: str):

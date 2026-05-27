@@ -92,7 +92,7 @@ async def _login() -> dict[str, str]:
         return {}
     try:
         async with httpx.AsyncClient(
-            headers=_HEADERS, follow_redirects=False, timeout=8
+            headers=_HEADERS, follow_redirects=True, timeout=12
         ) as c:
             resp = await c.post(
                 _LOGIN_URL,
@@ -102,15 +102,8 @@ async def _login() -> dict[str, str]:
                     "login":          "Вход",
                 },
             )
-        # Куки в 302-ответе (Set-Cookie header)
+        # Куки из финального ответа (follow_redirects=True)
         cookies = {k: v for k, v in resp.cookies.items()}
-        # Также пробуем извлечь из Set-Cookie header напрямую
-        for h in resp.headers.get_list("set-cookie"):
-            for part in h.split(";"):
-                part = part.strip()
-                if "=" in part and not any(x in part.lower() for x in ("path", "domain", "expires", "max-age", "secure", "httponly", "samesite")):
-                    k, v = part.split("=", 1)
-                    cookies[k.strip()] = v.strip()
         if "bb_session" in cookies or "bb_data" in cookies:
             _FAIL_COUNT = 0
             _FAIL_UNTIL = 0.0
@@ -172,7 +165,7 @@ class RuTrackerProvider(BaseProvider):
 
     async def search(self, query: str, category: str) -> list[SearchResult]:
         try:
-            return await asyncio.wait_for(self._search_inner(query, category), timeout=5)
+            return await asyncio.wait_for(self._search_inner(query, category), timeout=30)
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[RuTracker] search timeout/error: {e}")
             return []

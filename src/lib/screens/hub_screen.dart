@@ -88,8 +88,9 @@ class _HubScreenState extends State<HubScreen> {
 
   Future<void> _vkLogin() async {
     try {
-      final url = await _api.vkAuthUrl();
-      final popup = html.window.open(url, 'vk_oauth', 'width=600,height=520,scrollbars=yes');
+      final origin = html.window.location.origin;
+      final url = '$origin/kinovibe/vk-login.html';
+      final popup = html.window.open(url, 'vk_oauth', 'width=480,height=560,scrollbars=yes');
       await for (final _ in Stream.periodic(const Duration(milliseconds: 600))) {
         if (popup.closed == true) break;
       }
@@ -125,19 +126,20 @@ class _HubScreenState extends State<HubScreen> {
   void _loadSections() {
     for (final s in _sectionDefs) {
       setState(() => _sectionLoading[s.id] = true);
-      _api
-          .search(s.query, category: s.category, platform: 'all', popularity: 'all', mode: 'search')
-          .then((result) {
-        if (mounted) {
-          setState(() {
-            _sectionMovies[s.id] = result.items.take(12).toList();
-            _sectionLoading[s.id] = false;
-          });
-        }
-      }).catchError((_) {
-        if (mounted) setState(() => _sectionLoading[s.id] = false);
-      });
     }
+    _api.fetchHome().then((home) {
+      if (!mounted) return;
+      setState(() {
+        for (final s in _sectionDefs) {
+          _sectionMovies[s.id] = home[s.id] ?? [];
+          _sectionLoading[s.id] = false;
+        }
+      });
+    }).catchError((e) {
+      if (mounted) setState(() {
+        for (final s in _sectionDefs) _sectionLoading[s.id] = false;
+      });
+    });
   }
 
   Future<void> _search() async {

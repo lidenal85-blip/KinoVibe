@@ -35,6 +35,13 @@ class ApiService {
     return SearchResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
+
+  Future<Map<String, List<Movie>>> fetchHome() async {
+    final res = await http.get(Uri.parse('$_base/home')).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) return {};
+    final d = jsonDecode(res.body) as Map<String, dynamic>;
+    return d.map((k, v) => MapEntry(k, (v as List).map((e) => Movie.fromJson(e)).toList()));
+  }
   Future<Map<String, dynamic>> getStream(String url, {String? provider}) async {
     final params = {'url': url, if (provider != null) 'provider': provider};
     final res = await http.get(

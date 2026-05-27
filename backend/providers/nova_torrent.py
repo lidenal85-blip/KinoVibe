@@ -40,6 +40,53 @@ def _make_magnet(torrent_hash: str, title: str) -> str:
     return f"magnet:?xt=urn:btih:{torrent_hash}&dn={name}{_TRACKERS}"
 
 
+def _torrent_url_result(item: dict, provider_label: str) -> Optional[SearchResult]:
+    """Kinozal/RuTracker via TorAPI: no Hash, but has Torrent URL.
+    We pass the .torrent URL to TorrServer via source_url so the stream layer
+    can add it to TorrServer and get a hash.
+    """
+    torrent_url = item.get('Torrent', '')
+    if not torrent_url:
+        return None
+    raw_name = item.get('Name', '') or item.get('Title', '')
+    seeds = int(item.get('Seeds', 0) or 0)
+    size = item.get('Size', '').replace('\xa0', ' ')
+    date = item.get('Date', '')
+    item_id = str(item.get('Id', ''))
+    page_url = item.get('Url', '')
+
+    meta_parts = []
+    if size:
+        meta_parts.append(size)
+    if seeds > 0:
+        meta_parts.append(f'🌱{seeds}')
+    meta = ' · '.join(meta_parts)
+    label = raw_name + (f'  [{meta}]' if meta else '')
+
+    size_mb = _parse_size_mb(size) or 0
+    validation = validate_torrent(raw_name, size_mb)
+
+    return SearchResult(
+        id=item_id,
+        title=label,
+        url=torrent_url,        # .torrent file URL — TorrServer может добавить по URL
+        thumbnail=item.get('Poster') or None,
+        duration=None,
+        channel=provider_label,
+        provider="torrent",
+        source_type="torrent_url",  # отличаем от magnet
+        description=item.get('Description', ''),
+        source_title=raw_name,
+        source_url=page_url,
+        extra={
+            "torrent_file_url": torrent_url,
+            "_seeds": seeds,
+            "_validation": validation,
+            "_is_suspicious": validation["risk_score"] > 0.5,
+        },
+    )
+
+
 def _parse_size_mb(size_str: str) -> Optional[int]:
     """Convert '2.26 GB' or '450 MB' to MB."""
     if not size_str:
@@ -154,7 +201,10 @@ async def _search_provider(
     data.sort(key=_sort_key)
 
     for item in data[:max_results]:
-        r = _result_from_item(item, provider_label)
+        if item.get('Hash'):
+            r = _result_from_item(item, provider_label)
+        else:
+            r = _torrent_url_result(item, provider_label)
         if r:
             results.append(r)
 
@@ -184,7 +234,13 @@ class NovaTorrentProvider(BaseProvider):
         unique: list[SearchResult] = []
         for r in combined:
             h = re.search(r'btih:([a-fA-F0-9]+)', r.url or '')
-            key = h.group(1).lower() if h else r.title
+            if h:
+                key = h.group(1).lower()
+            elif r.url:
+                # torrent_url: deduplicate by URL
+                key = r.url.split('?')[0]
+            else:
+                key = r.title or str(id(r))
             if key not in seen:
                 seen.add(key)
                 unique.append(r)
