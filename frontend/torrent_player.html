@@ -2,246 +2,106 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KinoVibe — Torrent Player</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/webtorrent/2.1.31/webtorrent.min.js"></script>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>KinoVibe - Torrent Player</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.12/hls.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/plyr/3.7.8/plyr.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/plyr/3.7.8/plyr.min.js"></script>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      background: #080812;
-      color: #c0c8e0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-    }
-
-    #player-wrap {
-      width: 100%;
-      height: 100vh;
-      display: none;
-      background: #000;
-    }
-
-    #player-wrap video {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-
-    #status {
-      text-align: center;
-      padding: 24px 32px;
-      width: 100%;
-      max-width: 480px;
-    }
-
-    .logo {
-      font-size: 40px;
-      margin-bottom: 16px;
-      filter: drop-shadow(0 0 12px rgba(0,212,255,0.5));
-    }
-
-    #title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #e0e8ff;
-      margin-bottom: 6px;
-      word-break: break-word;
-      line-height: 1.4;
-    }
-
-    #msg {
-      font-size: 13px;
-      color: #5a6080;
-      margin-bottom: 20px;
-    }
-
-    .progress-track {
-      width: 100%;
-      height: 6px;
-      background: #1a1a2e;
-      border-radius: 6px;
-      overflow: hidden;
-      margin-bottom: 12px;
-    }
-
-    .progress-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #00d4ff, #7b5ea7);
-      border-radius: 6px;
-      transition: width 0.4s ease;
-    }
-
-    .stats-row {
-      display: flex;
-      justify-content: center;
-      gap: 20px;
-      font-size: 11px;
-      color: #3a4060;
-      margin-bottom: 20px;
-    }
-
-    .stat-item { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-    .stat-val { font-size: 13px; font-weight: 700; color: #00d4ff; }
-    .stat-lbl { font-size: 10px; color: #3a4060; text-transform: uppercase; letter-spacing: 0.5px; }
-
-    #err-box {
-      display: none;
-      background: rgba(255,60,60,0.08);
-      border: 1px solid rgba(255,60,60,0.3);
-      border-radius: 10px;
-      padding: 16px;
-      font-size: 12px;
-      color: #ff6060;
-      word-break: break-word;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
-      border-radius: 10px;
-      border: 1px solid rgba(0,212,255,0.4);
-      background: rgba(0,212,255,0.08);
-      color: #00d4ff;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-      margin-top: 14px;
-    }
-    .btn:hover { background: rgba(0,212,255,0.15); }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:#080812;color:#c0c8e0;font-family:-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+  #status{text-align:center;padding:24px 32px;max-width:480px;width:100%;}
+  .logo{font-size:40px;margin-bottom:16px;filter:drop-shadow(0 0 12px rgba(0,212,255,.5));}
+  #title{font-size:15px;font-weight:700;color:#e0e8ff;margin-bottom:6px;word-break:break-word;}
+  #msg{font-size:13px;color:#5a6080;margin-bottom:20px;}
+  .pt{width:100%;height:6px;background:#1a1a2e;border-radius:6px;overflow:hidden;margin-bottom:16px;}
+  .pf{height:100%;width:0%;background:linear-gradient(90deg,#00d4ff,#7b5ea7);border-radius:6px;transition:width .4s;}
+  #eb{display:none;background:rgba(255,60,60,.08);border:1px solid rgba(255,60,60,.3);border-radius:10px;padding:16px;font-size:12px;color:#ff6060;}
+  #pw{width:100%;height:100vh;display:none;background:#000;}
+  #pw video{width:100%;height:100%;object-fit:contain;}
+  :root{--plyr-color-main:#00d4ff;}
+  .plyr--video{height:100vh;}
   </style>
 </head>
 <body>
-
 <div id="status">
-  <div class="logo">🌊</div>
-  <div id="title">Инициализация торрент-движка…</div>
-  <div id="msg">WebTorrent загружает раздачу из сети пиров</div>
-  <div class="progress-track">
-    <div class="progress-fill" id="pbar"></div>
-  </div>
-  <div class="stats-row">
-    <div class="stat-item">
-      <span class="stat-val" id="s-dl">0</span>
-      <span class="stat-lbl">МБ/с ↓</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-val" id="s-pct">0%</span>
-      <span class="stat-lbl">прогресс</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-val" id="s-peers">0</span>
-      <span class="stat-lbl">пиров</span>
-    </div>
-    <div class="stat-item">
-      <span class="stat-val" id="s-eta">—</span>
-      <span class="stat-lbl">осталось</span>
-    </div>
-  </div>
-  <div id="err-box"></div>
+  <div class="logo">&#127754;</div>
+  <div id="title">Инициализация плеера…</div>
+  <div id="msg">Подключаемся к TorrServer</div>
+  <div class="pt"><div class="pf" id="pbar"></div></div>
+  <div id="eb"></div>
 </div>
-
-<div id="player-wrap">
-  <!-- video inserted here by JS -->
-</div>
-
+<div id="pw"><video id="video" playsinline></video></div>
 <script>
-(function () {
-  const params = new URLSearchParams(location.search);
-  const magnet = params.get('magnet');
-  const statusEl  = document.getElementById('status');
-  const playerWrap= document.getElementById('player-wrap');
-  const titleEl   = document.getElementById('title');
-  const msgEl     = document.getElementById('msg');
-  const pbarEl    = document.getElementById('pbar');
-  const dlEl      = document.getElementById('s-dl');
-  const pctEl     = document.getElementById('s-pct');
-  const peersEl   = document.getElementById('s-peers');
-  const etaEl     = document.getElementById('s-eta');
-  const errBox    = document.getElementById('err-box');
-
-  function showError(msg) {
-    msgEl.textContent = 'Ошибка воспроизведения';
-    errBox.style.display = 'block';
-    errBox.textContent = msg;
-  }
-
-  if (!magnet) {
-    showError('Magnet-ссылка не передана (?magnet=...)');
-    return;
-  }
-
-  if (typeof WebTorrent === 'undefined') {
-    showError('WebTorrent не загружен. Проверьте подключение к CDN.');
-    return;
-  }
-
-  const client = new WebTorrent();
-
-  client.on('error', function (err) {
-    showError('WebTorrent: ' + err.message);
-  });
-
-  titleEl.textContent = 'Подключаемся к раздаче…';
-  msgEl.textContent = decodeURIComponent(magnet).substring(0, 80) + '…';
-
-  client.add(magnet, { path: '/tmp/webtorrent' }, function (torrent) {
-    titleEl.textContent = torrent.name || 'Видео';
-    msgEl.textContent   = 'Буферизация…';
-
-    // Pick the largest video file
-    const videoExts = ['mp4', 'mkv', 'avi', 'webm', 'mov', 'wmv', 'm4v'];
-    const videoFile = torrent.files
-      .filter(f => videoExts.some(ext => f.name.toLowerCase().endsWith('.' + ext)))
-      .sort((a, b) => b.length - a.length)[0]
-      || torrent.files.sort((a, b) => b.length - a.length)[0];
-
-    if (!videoFile) {
-      showError('Видео-файл не найден в торренте');
-      return;
-    }
-
-    const video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    playerWrap.appendChild(video);
-
-    videoFile.renderTo(video);
-
-    // Show player as soon as we have enough buffered
-    video.addEventListener('canplay', function () {
-      statusEl.style.display  = 'none';
-      playerWrap.style.display = 'block';
-    });
-
-    // Stats update loop
-    setInterval(function () {
-      const pct  = (torrent.progress * 100).toFixed(1);
-      const dl   = (torrent.downloadSpeed / 1024 / 1024).toFixed(2);
-      const eta  = torrent.timeRemaining;
-
-      pbarEl.style.width = pct + '%';
-      dlEl.textContent   = dl;
-      pctEl.textContent  = pct + '%';
-      peersEl.textContent= torrent.numPeers;
-
-      if (eta === Infinity || eta < 0) {
-        etaEl.textContent = '—';
+(function(){
+  var p=new URLSearchParams(location.search);
+  var magnet=p.get('magnet'),hashParam=p.get('hash');
+  var idx=parseInt(p.get('index')||'1',10);
+  var title=decodeURIComponent(p.get('title')||'');
+  var TS=location.origin+'/torrserver';
+  var sEl=document.getElementById('status');
+  var pw=document.getElementById('pw');
+  var tEl=document.getElementById('title');
+  var mEl=document.getElementById('msg');
+  var bar=document.getElementById('pbar');
+  var eb=document.getElementById('eb');
+  var vid=document.getElementById('video');
+  function showErr(m){mEl.textContent='Ошибка';eb.style.display='block';eb.textContent=m;}
+  function prog(n){bar.style.width=n+'%';}
+  function startPlayer(url,t){
+    tEl.textContent=t||'Видео';mEl.textContent='Запуск плеера…';prog(100);
+    setTimeout(function(){
+      sEl.style.display='none';pw.style.display='block';
+      var pl=new Plyr(vid,{
+        controls:['play-large','play','rewind','fast-forward','progress','current-time','duration','mute','volume','settings','pip','fullscreen'],
+        seekTime:10,tooltips:{controls:true,seek:true}
+      });
+      if(url.indexOf('.m3u8')>-1){
+        if(typeof Hls!=='undefined'&&Hls.isSupported()){
+          var hls=new Hls();hls.loadSource(url);hls.attachMedia(vid);
+          hls.on(Hls.Events.MANIFEST_PARSED,function(){pl.play();});
+          hls.on(Hls.Events.ERROR,function(e,d){if(d.fatal)showErr('HLS:'+d.details);});
+        }else if(vid.canPlayType('application/vnd.apple.mpegurl')){vid.src=url;pl.play();}
+        else showErr('HLS не поддерживается');
       } else {
-        const s = Math.floor(eta / 1000);
-        etaEl.textContent = s < 60 ? s + 'с' : Math.floor(s / 60) + 'м';
+        // Прямой HTTP TorrServer: Range-запросы, перемотка работает
+        vid.src=url;pl.play();
       }
-    }, 500);
-  });
+    },400);
+  }
+  async function addAndStream(mag,fi,t){
+    tEl.textContent=t||'Загрузка…';
+    mEl.textContent='Добавляем в TorrServer…';prog(20);
+    try{
+      var r=await fetch(TS+'/torrents',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'add',link:mag,title:t||'stream',save_to_db:false})
+      });
+      if(!r.ok)throw new Error('add '+r.status);
+      var tor=await r.json();var h=tor.hash;
+      mEl.textContent='Ожидаем метаданные…';prog(40);
+      var i=0,s=0;
+      while(s<2&&i<30){
+        await new Promise(function(res){setTimeout(res,1000);});
+        try{
+          var ir=await fetch(TS+'/torrents',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({action:'get',hash:h})});
+          if(ir.ok){var inf=await ir.json();s=inf.stat||0;}
+        }catch(e){}
+        i++;prog(40+i);
+      }
+      if(s<2)throw new Error('TorrServer не ответил за 30с');
+      startPlayer(TS+'/stream?link='+h+'&index='+fi+'&play',t||tor.title||'Видео');
+    }catch(e){showErr(e.message);}
+  }
+  if(hashParam){
+    prog(80);mEl.textContent='Открываем поток…';
+    startPlayer(TS+'/stream?link='+hashParam+'&index='+idx+'&play',title);
+  } else if(magnet){
+    addAndStream(magnet,idx,title);
+  } else {
+    showErr('Не передан magnet или hash. Используйте ?magnet=... или ?hash=...&index=1');
+  }
 })();
 </script>
 </body>

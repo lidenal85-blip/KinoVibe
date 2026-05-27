@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("kinovibe.vk_auth")
 
-router = APIRouter(prefix="/api/vk", tags=["vk-auth"])
+router = APIRouter(prefix="/vk", tags=["vk-auth"])
 
 VK_APP_ID  = os.getenv("VK_APP_ID", "")
 VK_API_VER = "5.131"

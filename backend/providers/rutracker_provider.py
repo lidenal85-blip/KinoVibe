@@ -54,6 +54,11 @@ _TRACKERS = (
     "&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
 )
 
+_FAIL_COUNT: int = 0
+_FAIL_UNTIL: float = 0.0
+_MAX_FAILS: int = 2
+_FAIL_BACKOFF = 300.0  # 5 мин
+
 # ── Shared session cache ──────────────────────────────────────────────────────
 _COOKIES: dict[str, str] = {}
 _SESSION_TIME: float = 0.0
@@ -79,6 +84,7 @@ def _make_magnet(info_hash: str, title: str) -> str:
 
 async def _login() -> dict[str, str]:
     """Авторизуемся на rutracker.org, возвращаем cookies."""
+    global _FAIL_COUNT, _FAIL_UNTIL
     login    = os.getenv("RUTRACKER_LOGIN", "")
     password = os.getenv("RUTRACKER_PASSWORD", "")
     if not login or not password:
@@ -86,7 +92,7 @@ async def _login() -> dict[str, str]:
         return {}
     try:
         async with httpx.AsyncClient(
-            headers=_HEADERS, follow_redirects=True, timeout=20
+            headers=_HEADERS, follow_redirects=False, timeout=8
         ) as c:
             resp = await c.post(
                 _LOGIN_URL,
@@ -96,13 +102,31 @@ async def _login() -> dict[str, str]:
                     "login":          "Вход",
                 },
             )
-        cookies = dict(resp.cookies)
+        # Куки в 302-ответе (Set-Cookie header)
+        cookies = {k: v for k, v in resp.cookies.items()}
+        # Также пробуем извлечь из Set-Cookie header напрямую
+        for h in resp.headers.get_list("set-cookie"):
+            for part in h.split(";"):
+                part = part.strip()
+                if "=" in part and not any(x in part.lower() for x in ("path", "domain", "expires", "max-age", "secure", "httponly", "samesite")):
+                    k, v = part.split("=", 1)
+                    cookies[k.strip()] = v.strip()
         if "bb_session" in cookies or "bb_data" in cookies:
-            logger.info(f"[RuTracker] Авторизация успешна (user={login})")
+            _FAIL_COUNT = 0
+            _FAIL_UNTIL = 0.0
+            logger.info(f"[RuTracker] login OK user={login}")
             return cookies
-        logger.warning("[RuTracker] Авторизация не удалась — нет сессионной куки")
+        logger.warning("[RuTracker] login failed (no cookie)")
+        _FAIL_COUNT += 1
+        if _FAIL_COUNT >= _MAX_FAILS:
+            _FAIL_UNTIL = time.time() + _FAIL_BACKOFF
+            logger.warning(f"[RuTracker] circuit breaker ON for 5 min")
         return {}
     except Exception as e:
+        _FAIL_COUNT += 1
+        if _FAIL_COUNT >= _MAX_FAILS:
+            _FAIL_UNTIL = time.time() + _FAIL_BACKOFF
+            logger.warning(f"[RuTracker] circuit breaker ON for 5 min")
         logger.error(f"[RuTracker] login error: {e}")
         return {}
 
@@ -110,6 +134,8 @@ async def _login() -> dict[str, str]:
 async def _get_cookies() -> dict[str, str]:
     """Вернуть актуальные куки, при необходимости перелогиниться."""
     global _COOKIES, _SESSION_TIME
+    if time.time() < _FAIL_UNTIL:
+        return {}
     async with _SESSION_LOCK:
         if _COOKIES and (time.time() - _SESSION_TIME) < _SESSION_TTL:
             return _COOKIES
@@ -145,6 +171,13 @@ class RuTrackerProvider(BaseProvider):
         )
 
     async def search(self, query: str, category: str) -> list[SearchResult]:
+        try:
+            return await asyncio.wait_for(self._search_inner(query, category), timeout=5)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[RuTracker] search timeout/error: {e}")
+            return []
+
+    async def _search_inner(self, query: str, category: str) -> list[SearchResult]:
         cookies = await _get_cookies()
         if not cookies:
             return []
