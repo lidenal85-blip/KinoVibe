@@ -35,6 +35,7 @@ class _HubScreenState extends State<HubScreen> {
 
   static const _sectionDefs = [
     (id: 'popular', label: 'Популярное сейчас', query: 'топ фильмы 2026', category: 'movies'),
+    (id: 'series', label: 'Сериалы', query: 'сериал лучшие', category: 'series'),
     (id: 'comedy', label: 'Комедии', query: 'комедия фильм лучшие', category: 'movies'),
     (id: 'action', label: 'Боевики', query: 'боевик экшен фильм', category: 'movies'),
     (id: 'anime', label: 'Аниме', query: 'аниме лучшие', category: 'anime'),

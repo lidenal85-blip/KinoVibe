@@ -36,6 +36,17 @@ class ApiService {
   }
 
 
+
+  Future<List<Map<String,dynamic>>> filmStreams(String title, {int? year, String category='movies'}) async {
+    final res = await http.post(
+      Uri.parse('$_base/film/streams'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'title': title, 'year': year, 'category': category}),
+    ).timeout(const Duration(seconds: 25));
+    if (res.statusCode != 200) return [];
+    final d = jsonDecode(res.body) as Map;
+    return List<Map<String,dynamic>>.from(d['streams'] ?? []);
+  }
   Future<Map<String, List<Movie>>> fetchHome() async {
     final res = await http.get(Uri.parse('$_base/home')).timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) return {};

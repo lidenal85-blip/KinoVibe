@@ -22,6 +22,14 @@ class Movie {
     this.sourceType = 'video',
   });
 
+
+  Movie copyWith({String? url, String? provider, String? sourceType}) => Movie(
+    title: title, poster: poster, year: year, rating: rating,
+    description: description, category: category,
+    url: url ?? this.url,
+    provider: provider ?? this.provider,
+    sourceType: sourceType ?? this.sourceType,
+  );
   bool get isMagnet => url.startsWith('magnet:') || sourceType == 'magnet';
   bool get isSiteOnly => sourceType == 'site';
 

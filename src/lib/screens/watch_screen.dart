@@ -80,6 +80,30 @@ class _WatchScreenState extends State<WatchScreen> {
 
   Future<void> _loadStream({String? url}) async {
     final target = url ?? _movie.url;
+    // TMDB card: no url but has title → find streams via /film/streams
+    if (target.isEmpty && _movie.title.isNotEmpty) {
+      setState(() { _streamLoading = true; _streamError = null; });
+      try {
+        final year = int.tryParse(_movie.year ?? '');
+        final streams = await _api.filmStreams(_movie.title, year: year, category: _movie.category ?? '');
+        if (!mounted) return;
+        if (streams.isNotEmpty) {
+          final best = streams.first;
+          final bestUrl = best['url'] as String? ?? '';
+          final bestProvider = best['provider'] as String? ?? '';
+          setState(() {
+            _movie = _movie.copyWith(url: bestUrl, provider: bestProvider);
+            _streamLoading = false;
+          });
+          if (bestUrl.isNotEmpty) _loadStream(url: bestUrl);
+        } else {
+          setState(() { _streamLoading = false; _streamError = 'Поток не найден. Попробуйте поиск вручную.'; });
+        }
+      } catch (e) {
+        if (mounted) setState(() { _streamLoading = false; _streamError = 'Ошибка поиска: $e'; });
+      }
+      return;
+    }
     if (target.isEmpty) return;
 
     // Magnet links → WebTorrent player, no backend call needed
@@ -369,85 +393,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   color: AbyssalColors.textSecondary,
                   onPressed: _openOnSite,
                 ),
-              ),
-            ),
-          if (roomId != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _PartyBadge(
-                roomId: roomId,
-                peers: _peersCount,
-                connected: _wsConnected,
-              ),
-            ),
-          const SizedBox(width: 8),
-        ],
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1, color: AbyssalColors.borderSubtle),
-        ),
-      ),
-      body: Column(
-        children: [
-          _buildPlayerArea(),
-          // Watch Party controls
-          _buildPartyControls(),
-          if (isWide)
-            Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 2, child: _MovieInfo(movie: _movie)),
-                  const VerticalDivider(width: 1, color: AbyssalColors.borderSubtle),
-                  Expanded(
-                    child: _ChatPanel(
-                      messages: _messages,
-                      onSend: _sendChat,
-                      isConnected: _wsConnected,
-                      peersCount: _peersCount,
-                      roomId: roomId,
-                    ),
-                  ),
-                ],
-              ),
-            )
-          else
-            Expanded(
-              child: DefaultTabController(
-                length: 2,
-                child: Column(
-                  children: [
-                    const TabBar(
-                      indicatorColor: AbyssalColors.cyan,
-                      labelColor: AbyssalColors.cyan,
-                      unselectedLabelColor: AbyssalColors.textMuted,
-                      tabs: [Tab(text: 'Инфо'), Tab(text: 'Чат')],
-                    ),
-                    Expanded(
-                      child: TabBarView(
-                        children: [
-                          _MovieInfo(movie: _movie),
-                          _ChatPanel(
-                            messages: _messages,
-                            onSend: _sendChat,
-                            isConnected: _wsConnected,
-                            peersCount: _peersCount,
-                            roomId: roomId,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // ─── Watch Party Panel ────────────────────────────────────────────────────
-
+              ),\n            ),\n          if (roomId != null)\n            Padding(\n              padding: const EdgeInsets.only(right: 8),\n              child: _PartyBadge(\n                roomId: roomId,\n                peers: _peersCount,\n                connected: _wsConnected,\n              ),\n            ),\n          const SizedBox(width: 8),\n        ],\n        bottom: const PreferredSize(\n          preferredSize: Size.fromHeight(1),\n          child: Divider(height: 1, color: AbyssalColors.borderSubtle),\n        ),\n      ),\n      body: Column(\n        children: [\n          _buildPlayerArea(),\n          // Watch Party controls\n          _buildPartyControls(),\n          if (isWide)\n            Expanded(\n              child: Row(\n                crossAxisAlignment: CrossAxisAlignment.start,\n                children: [\n                  Expanded(flex: 2, child: _MovieInfo(movie: _movie)),\n                  const VerticalDivider(width: 1, color: AbyssalColors.borderSubtle),\n                  Expanded(\n                    child: _ChatPanel(\n                      messages: _messages,\n                      onSend: _sendChat,\n                      isConnected: _wsConnected,\n                      peersCount: _peersCount,\n                      roomId: roomId,\n                    ),\n                  ),\n                ],\n              ),\n            )\n          else\n            Expanded(\n              child: DefaultTabController(\n                length: 2,\n                child: Column(\n                  children: [\n                    const TabBar(\n                      indicatorColor: AbyssalColors.cyan,\n                      labelColor: AbyssalColors.cyan,\n                      unselectedLabelColor: AbyssalColors.textMuted,\n                      tabs: [Tab(text: 'Инфо'), Tab(text: 'Чат')],\n                    ),\n                    Expanded(\n                      child: TabBarView(\n                        children: [\n                          _MovieInfo(movie: _movie),\n                          _ChatPanel(\n                            messages: _messages,\n                            onSend: _sendChat,\n                            isConnected: _wsConnected,\n                            peersCount: _peersCount,\n                            roomId: roomId,\n                          ),\n                        ],\n                      ),\n                    ),\n                  ],\n                ),\n              ),\n            ),\n        ],\n      ),\n    );\n  }\n\n  // ─── Watch Party Panel ────────────────────────────────────────────────────\n
   Widget _buildPartyControls() {
     if (_activeRoomId != null) {
       // Room is active — show invite link copy button
@@ -507,7 +453,7 @@ class _WatchScreenState extends State<WatchScreen> {
       );
     }
 
-    // No room yet — show "Watch Party" button
+    // No room yet — show \"Watch Party\" button
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: const BoxDecoration(
@@ -605,7 +551,7 @@ class _WatchScreenState extends State<WatchScreen> {
               const SizedBox(height: 8),
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 40),
-                child: Text('Прямая magnet-ссылка не найдена.\nОткройте страницу раздачи чтобы скачать.',
+                child: Text('Прямая magnet-ссылка не найдена.\\nОткройте страницу раздачи чтобы скачать.',
                     style: TextStyle(color: AbyssalColors.textMuted, fontSize: 13),
                     textAlign: TextAlign.center),
               ),
@@ -670,7 +616,7 @@ class _WatchScreenState extends State<WatchScreen> {
             const CircularProgressIndicator(color: AbyssalColors.cyan),
             const SizedBox(height: 16),
             Text(
-              'Подготовка потока... $_ytHlsSegments сегментов',
+              _ytHlsSegments > 0 ? 'Буферизация... $_ytHlsSegments сег. (~${_ytHlsSegments*2} сек)' : 'Извлекаем поток...',
               style: const TextStyle(color: AbyssalColors.textMuted, fontSize: 13),
             ),
           ],
@@ -704,16 +650,13 @@ class _WatchScreenState extends State<WatchScreen> {
             children: [
               const Icon(Icons.play_circle_outline_rounded,
                   color: AbyssalColors.textMuted, size: 56),
-              const SizedBox(height: 16),
-              const Text('Встроенный плеер недоступен',
+              const SizedBox(height: 16),\n              const Text('Встроенный плеер недоступен',
                   style: TextStyle(
                       color: AbyssalColors.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: Text(
+              const SizedBox(height: 8),\n              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 40),\n                child: Text(
                   _streamError!.length > 120
                       ? '${_streamError!.substring(0, 120)}…'
                       : _streamError!,
@@ -721,10 +664,8 @@ class _WatchScreenState extends State<WatchScreen> {
                       color: AbyssalColors.textMuted, fontSize: 11),
                   textAlign: TextAlign.center,
                 ),
-              ),
-              if (_canOpenOnSite) ...[
-                const SizedBox(height: 20),
-                GestureDetector(
+              ),\n              if (_canOpenOnSite) ...[
+                const SizedBox(height: 20),\n                GestureDetector(
                   onTap: _openOnSite,
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
@@ -749,49 +690,13 @@ class _WatchScreenState extends State<WatchScreen> {
                       ],
                     ),
                   ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
-
-    final info = _streamInfo;
-    if (info == null) {
-      return _PlayerShell(
-        height: h,
-        child: const Center(
-          child: Text('Поток недоступен',
+                ),\n              ],\n            ],\n          ),\n        ),\n      );\n    }\n\n    final info = _streamInfo;\n    if (info == null) {\n      return _PlayerShell(\n        height: h,\n        child: const Center(\n          child: Text('Поток недоступен',
               style: TextStyle(color: AbyssalColors.textMuted)),
-        ),
-      );
-    }
-
-    final embedUrl = info['embed_url'] as String?;
-    final streamUrl = info['stream_url'] as String? ?? info['url'] as String?;
-
-    if ((embedUrl == null || embedUrl.isEmpty) &&
-        (streamUrl == null || streamUrl.isEmpty)) {
-      return _PlayerShell(
-        height: h,
-        child: const Center(
-          child: Text('Поток недоступен',
+        ),\n      );\n    }\n\n    final embedUrl = info['embed_url'] as String?;\n    final streamUrl = info['stream_url'] as String? ?? info['url'] as String?;\n
+    if ((embedUrl == null || embedUrl.isEmpty) &&\n        (streamUrl == null || streamUrl.isEmpty)) {\n      return _PlayerShell(\n        height: h,\n        child: const Center(\n          child: Text('Поток недоступен',
               style: TextStyle(color: AbyssalColors.textMuted)),
-        ),
-      );
-    }
-
-    return _WebVideoPlayer(
-      embedUrl: embedUrl,
-      streamUrl: streamUrl,
-      height: h,
-      onVideoReady: (el) => setState(() => _videoEl = el),
-      onSync: _activeRoomId != null ? _sendSync : null,
-    );
-  }
-}
-
+        ),\n      );\n    }\n
+    return _WebVideoPlayer(\n      embedUrl: embedUrl,\n      streamUrl: streamUrl,\n      height: h,\n      onVideoReady: (el) => setState(() => _videoEl = el),\n      onSync: _activeRoomId != null ? _sendSync : null,\n    );\n  }\n}\n
 // ─── _WebTorrentPlayer ───────────────────────────────────────────────────────
 
 class _WebTorrentPlayer extends StatefulWidget {
@@ -1210,7 +1115,7 @@ class _ChatPanelState extends State<_ChatPanel> {
                             Icon(Icons.lock_outline_rounded,
                                 color: AbyssalColors.textMuted, size: 28),
                             SizedBox(height: 10),
-                            Text('Создай Watch Party\nчтобы общаться в чате',
+                            Text('Создай Watch Party\\nчтобы общаться в чате',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                     color: AbyssalColors.textMuted, fontSize: 12)),
@@ -1227,7 +1132,7 @@ class _ChatPanelState extends State<_ChatPanel> {
                                       color: AbyssalColors.violet, strokeWidth: 2),
                                 ),
                                 SizedBox(height: 10),
-                                Text('Подключение к комнате...',
+                                Text('Подключение к комнате...', 
                                     style: TextStyle(
                                         color: AbyssalColors.textMuted, fontSize: 12)),
                               ],
@@ -1286,17 +1191,12 @@ class _ChatPanelState extends State<_ChatPanel> {
                       size: 18,
                       color: canSend ? AbyssalColors.cyan : AbyssalColors.textMuted),
                 ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
+              ),\n            ],
+          ),\n        ),\n      ],\n    );\n  }\n}\n
 class _MessageBubble extends StatelessWidget {
   final _ChatMsg msg;
+  final bool isMe;
+  final String? sender;
   const _MessageBubble({required this.msg});
 
   @override
@@ -1336,8 +1236,4 @@ class _MessageBubble extends StatelessWidget {
                 style: const TextStyle(
                     color: AbyssalColors.textPrimary, fontSize: 13)),
           ],
-        ),
-      ),
-    );
-  }
-}
+        ),\n      ),\n    );\n  }\n}
