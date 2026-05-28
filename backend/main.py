@@ -46,6 +46,7 @@ _STREAM_DIR = Path("/tmp/kv_streams")
 _STREAM_DIR.mkdir(parents=True, exist_ok=True)
 _YTDLP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "yt-dlp")
 _active_streams: dict[str, dict] = {}
+_direct_url_cache: dict[str, tuple] = {}
 
 app = FastAPI(
     title="KinoVibe API",
@@ -138,7 +139,7 @@ async def _ffmpeg_encode_hls(stream_id: str, video_url: str, audio_url: str | No
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
             "-c:a", "aac", "-b:a", "128k",
             "-vf", "scale=-2:480",
-            "-hls_time", "3",           # 3s segments: faster first playback
+            "-hls_time", "2",           # 2s segments: faster first playback
             "-hls_list_size", "0",
             "-hls_flags", "append_list",
             "-hls_segment_filename", str(stream_dir / "seg%03d.ts"),
@@ -171,6 +172,15 @@ async def _ffmpeg_encode_hls(stream_id: str, video_url: str, audio_url: str | No
 async def _run_hls_pipeline(stream_id: str, url: str, stream_dir: Path) -> None:
     """Extract direct URL via yt-dlp -g + get duration, then encode to HLS."""
     state = _active_streams[stream_id]
+    # Use cached direct URL if fresh (<4h)
+    _cached = _direct_url_cache.get(url)
+    if _cached and (time.time() - _cached[2]) < 14400:
+        _cv, _ca, _ = _cached
+        state["video_url"] = _cv
+        state["audio_url"] = _ca
+        state["is_youtube"] = "youtube.com" in url or "youtu.be" in url
+        await _ffmpeg_encode_hls(stream_id, _cv, _ca, stream_dir, state.get("start_sec", 0))
+        return
     try:
         is_youtube = "youtube.com" in url or "youtu.be" in url
         fmt = (
@@ -214,6 +224,8 @@ async def _run_hls_pipeline(stream_id: str, url: str, stream_dir: Path) -> None:
         # Cache for seek-restart (avoids re-running yt-dlp on every seek)
         state["video_url"] = video_url
         state["audio_url"] = audio_url
+        _direct_url_cache[url] = (video_url, audio_url, time.time())
+        state["is_youtube"] = is_youtube
         if dur > 0:
             state["duration_sec"] = dur
         logger.info(f"[HLS] {stream_id} url ok, dur={dur}s, audio={'yes' if audio_url else 'no'}")
@@ -769,12 +781,12 @@ async def home_sections():
             out.append({"title": title, "poster": f"{IMG}{poster}" if poster else None, "year": (m.get("release_date") or m.get("first_air_date") or "")[:4], "rating": str(round(m.get("vote_average",0),1)), "description": m.get("overview"), "url": "", "provider": "tmdb", "category": "movies", "source_type": "video", "tmdb_id": m.get("id")})
         return out
     async with httpx.AsyncClient(timeout=8, headers=headers) as c:
-        results = await asyncio.gather(c.get(f"{BASE}/movie/popular?language=ru&page=1"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=35&sort_by=popularity.desc"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=28&sort_by=popularity.desc"), c.get(f"{BASE}/discover/tv?language=ru&with_genres=16&sort_by=popularity.desc"), return_exceptions=True)
+        results = await asyncio.gather(c.get(f"{BASE}/movie/popular?language=ru&page=1"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=35&sort_by=popularity.desc"), c.get(f"{BASE}/discover/movie?language=ru&with_genres=28&sort_by=popularity.desc"), c.get(f"{BASE}/discover/tv?language=ru&with_genres=16&sort_by=popularity.desc"), c.get(f"{BASE}/trending/tv/week?language=ru"), return_exceptions=True)
     def safe(r):
         if isinstance(r, Exception): return []
         try: return r.json().get("results",[])[:12]
         except: return []
-    return {"popular": fmt(safe(results[0])), "comedy": fmt(safe(results[1])), "action": fmt(safe(results[2])), "anime": fmt(safe(results[3]))}
+    return {"popular": fmt(safe(results[0])), "comedy": fmt(safe(results[1])), "action": fmt(safe(results[2])), "anime": fmt(safe(results[3])), "series": fmt(safe(results[4]))}
 
 @app.websocket("/ws/{peer_id}")
 async def websocket_endpoint(ws: WebSocket, peer_id: str):
